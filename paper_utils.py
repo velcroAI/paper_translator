@@ -1334,7 +1334,7 @@ def save_pdf_reportlab(translated_chunks: list, output_path: str, assets: dict =
         raise ImportError(
             "PDF 출력에는 'reportlab' 패키지가 필요합니다.\n"
             "  설치: pip install reportlab\n"
-            "  대안: Translator.bat -> Options -> Output format 에서 DOCX 선택"
+            "  대안: 출력 형식을 DOCX 로 (bat: Options > 7 Output format / GUI: 왼쪽 [출력 형식])"
         )
     assets = assets or {}
     if full is None:
@@ -1593,7 +1593,7 @@ def run_qa(full: str, notes: dict, stats: dict = None, vision: bool = False) -> 
     nums = [int(t) for t in toks if t.isdigit()]
     if PAGE_MARKERS:
         if not nums:
-            lines.append("[쪽 마커] 없음 — 원서 쪽번호를 찾지 못함 (Options > Page markers 에서 첫 쪽 번호 지정 가능)")
+            lines.append("[쪽 마커] 없음 — 원서 쪽번호를 찾지 못함 (bat: Options > 4 Page markers / GUI: [첫 쪽 번호] 에서 지정 가능)")
             warn += 1
         else:
             exp = set(range(nums[0], max(nums) + 1))

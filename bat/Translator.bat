@@ -2,7 +2,8 @@
 setlocal EnableDelayedExpansion
 title Paper Translation Tool
 
-set "SCRIPT_DIR=%~dp0"
+:: -- Scripts and settings live in the repository root (one folder up) --
+for %%I in ("%~dp0..") do set "SCRIPT_DIR=%%~fI\"
 set "MODEL_CFG=%SCRIPT_DIR%model.cfg"
 set "EXTRACT_CFG=%SCRIPT_DIR%extract.cfg"
 set "KEY_CFG=%SCRIPT_DIR%api_key.cfg"

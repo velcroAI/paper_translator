@@ -35,7 +35,7 @@ RETRY_NOTE = ("\n\n(IMPORTANT: The previous attempt omitted or summarized conten
 def check_and_download():
     if not BATCH_INFO_PATH.exists():
         print("batch_info.json 파일이 없습니다.", flush=True)
-        print("먼저 batch_submit.py(옵션 2)를 실행하세요.", flush=True)
+        print("먼저 배치를 제출하세요 (bat: 메뉴 2 / GUI: [배치 제출]).", flush=True)
         return
 
     info = json.loads(BATCH_INFO_PATH.read_text(encoding="utf-8"))

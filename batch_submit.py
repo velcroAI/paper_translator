@@ -169,7 +169,7 @@ def submit_batch(input_file):
         print(f"  (용어집 추출 비용은 일반 요금: input {tracker.input_tokens:,} / output {tracker.output_tokens:,} tokens)", flush=True)
     print(flush=True)
     print("  컴퓨터를 꺼도 됩니다.", flush=True)
-    print("  나중에 option 3 으로 결과를 받으세요.", flush=True)
+    print("  나중에 결과를 받으세요 (bat: 메뉴 3 / GUI: [배치 결과 받기]).", flush=True)
     return batch.id
 
 
@@ -238,7 +238,7 @@ def submit_batch_vision(input_file, stats):
     print(f"  정보 저장: {BATCH_INFO_PATH}", flush=True)
     print(flush=True)
     print("  컴퓨터를 꺼도 됩니다. (assets 폴더의 페이지 이미지가 필요하니 지우지 마세요)", flush=True)
-    print("  나중에 option 3 으로 결과를 받으세요.", flush=True)
+    print("  나중에 결과를 받으세요 (bat: 메뉴 3 / GUI: [배치 결과 받기]).", flush=True)
     return batch.id
 
 

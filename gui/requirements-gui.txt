@@ -1,0 +1,4 @@
+# GUI / exe build only (core libraries: ../requirements.txt)
+customtkinter>=5.2
+tkinterdnd2>=0.4
+pyinstaller>=6.0

@@ -2,6 +2,7 @@
 api_key.cfg
 extract.cfg
 model.cfg
+gui.cfg
 
 # --- personal glossaries (course-specific) ---
 user_glossary.txt
@@ -17,6 +18,14 @@ last_output.md
 __pycache__/
 *.pyc
 backup_*/
+gui_error.log
+
+# --- GUI exe build output (gui/build_exe.bat) ---
+gui/build/
+gui/_internal/
+gui/*.exe
+gui/build_exe.log
+gui/build_selftest.log
 
 # --- documents (samples, inputs, outputs) ---
 *.pdf
