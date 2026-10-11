@@ -1,0 +1,32 @@
+# --- secrets / personal settings (never commit) ---
+api_key.cfg
+extract.cfg
+model.cfg
+
+# --- personal glossaries (course-specific) ---
+user_glossary.txt
+glossaries/
+
+# --- runtime artifacts ---
+_local/
+assets/
+batch_info.json
+last_*.txt
+last_*.log
+last_output.md
+__pycache__/
+*.pyc
+backup_*/
+
+# --- documents (samples, inputs, outputs) ---
+*.pdf
+*.docx
+*_한국어번역.*
+*_translated.*
+
+# --- OS / editor ---
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/

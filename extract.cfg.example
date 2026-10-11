@@ -1,0 +1,9 @@
+footnotes=commentary
+strip_references=true
+output_format=docx+pdf
+effort=low
+figures=true
+glossary=true
+page_markers=true
+first_page=auto
+glossary_file=none

@@ -1,0 +1,11 @@
+# 사용자 용어집 견본 — 모든 번역에 적용되며 자동 추출 용어집보다 우선합니다.
+# 형식: English term = 한국어   (한 줄에 하나, '#' 줄은 주석)
+# 수업·주제별로 파일을 따로 만들어 Translator.bat > Options > 9 에서 골라 쓰세요.
+
+deterrence = 억지
+compellence = 강압
+security dilemma = 안보 딜레마
+balance of power = 세력균형
+alliance = 동맹
+credible commitment = 신뢰할 수 있는 공약
+second-strike capability = 2차 공격 능력
