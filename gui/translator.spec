@@ -76,6 +76,8 @@ if ICON:
 
 # 파이프라인 모듈이 exe 안으로 들어가면 BASE_DIR 이 _internal 로 바뀌어 설정을 못 찾는다 -> 반드시 제외
 EXCLUDE = sorted(LOCAL)
+# PyMuPDF 2.0 의 layout(onnx 모델 50MB + onnxruntime) 은 쓰지 않는다 — 들어가면 데이터 누락으로 import 가 실패함
+EXCLUDE += ["pymupdf.layout", "pymupdf_layout", "pymupdf4llm", "onnxruntime"]
 
 a_gui = Analysis(
     [str(APP / "translator_gui.pyw")],

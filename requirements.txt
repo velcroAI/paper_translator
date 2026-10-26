@@ -1,5 +1,5 @@
 anthropic>=0.70
 python-docx>=1.1
-pymupdf>=1.24
+pymupdf>=1.24,<2.0  # 2.0 auto-loads the onnx layout module: untested with pdf_extract, breaks the exe build
 reportlab>=4.0
 pywin32>=306; sys_platform == "win32"
