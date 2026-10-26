@@ -82,12 +82,13 @@ def _load_extract_cfg() -> dict:
         page_markers=true         [원서 p. N] 쪽 마커
         first_page=auto           원서 첫 쪽 번호 (auto = 인쇄 쪽번호 자동 감지)
         glossary_file=none        사용자 용어집: glossaries/ 안의 파일 이름 (none = 사용 안 함)
+        style_file=style_ko.txt   한국어 문체 지침 파일 (키가 없으면 style_ko.txt 가 있을 때 사용, none = 끔)
         (하위 호환) strip_footnotes=true/false -> footnotes=strip/all
     """
     bool_defaults = {"strip_references": True, "figures": True, "glossary": True,
                      "page_markers": True}
     str_defaults  = {"output_format": "docx", "effort": "low", "footnotes": "",
-                     "first_page": "auto", "glossary_file": ""}
+                     "first_page": "auto", "glossary_file": "", "style_file": ""}
     out = {**bool_defaults, **str_defaults}
     legacy_strip = None
     cfg = BASE_DIR / "extract.cfg"
@@ -110,7 +111,7 @@ def _load_extract_cfg() -> dict:
                 out[k] = v
             elif k == "effort" and v in ("off", "low", "medium", "high", "xhigh"):
                 out[k] = v
-            elif k == "glossary_file":
+            elif k in ("glossary_file", "style_file"):
                 out[k] = line.split("=", 1)[1].strip()      # 대소문자 보존
             elif k == "first_page":
                 out[k] = v if (v == "auto" or v.isdigit()) else "auto"
@@ -165,6 +166,35 @@ def _resolve_user_glossary(name: str):
 
 
 USER_GLOSSARY_PATH = _resolve_user_glossary(_EXTRACT_CFG["glossary_file"])
+
+
+def _load_style_guide(name: str) -> str:
+    """한국어 문체 지침(style_ko.txt). '#' 주석 줄은 빼고('##' 제목은 유지) 프롬프트에 넣는다.
+    style_file 키가 없으면 BASE_DIR/style_ko.txt 를 쓰고, none/off 면 끈다."""
+    name = (name or "").strip()
+    if name.lower() in ("none", "off", "false"):
+        return ""
+    cands = [BASE_DIR / (name or "style_ko.txt")]
+    if name:
+        cands.append(Path(name))
+    for c in cands:
+        try:
+            if c.exists():
+                lines = [ln for ln in c.read_text(encoding="utf-8-sig").splitlines()
+                         if not ln.lstrip().startswith("#") or ln.lstrip().startswith("##")]
+                return "\n".join(lines).strip()
+        except Exception:
+            pass
+    return ""
+
+
+STYLE_GUIDE = _load_style_guide(_EXTRACT_CFG["style_file"])
+STYLE_HEADER = ("## Korean style guide (apply to the Korean wording only; fidelity to the source always comes first; "
+                "never add facts or drop content to satisfy it)\n")
+
+
+def _style_block() -> list:
+    return [{"type": "text", "text": STYLE_HEADER + STYLE_GUIDE}] if STYLE_GUIDE else []
 
 
 # ──────────────────────────────────────────────
@@ -244,7 +274,7 @@ SYSTEM_PROMPT = """You are an expert academic translator (English -> Korean) spe
 - If <text_to_translate> is empty or contains nothing translatable, output a single blank line.
 
 ## Style
-- Formal written academic Korean (문어체, '~이다/~하다' 체), but natural and easy to read — avoid translationese (번역투). Do not mirror English syntax: restructure long sentences, split them when needed, prefer active Korean constructions, avoid overusing '~에 의해', '~것이다', '그것', '~를 가지다', '~에 있어서'. Never drop content.
+- Formal written academic Korean (문어체, '~이다/~하다' 체), but natural and easy to read — avoid translationese (번역투). If a "Korean style guide" block is given below, follow it for wording; it overrides these general style notes but never the output contract. Do not mirror English syntax: restructure long sentences, split them when needed, prefer active Korean constructions, avoid overusing '~에 의해', '~것이다', '그것', '~를 가지다', '~에 있어서'. Never drop content.
 - Prefer clear, widely understood Korean terms over obscure Sino-Korean jargon, so that a general educated reader can follow; use the established Korean academic term when one exists.
 - Terminology: use the glossary (if given) consistently; user-specified entries take priority. For key technical terms, theories, and proper nouns, add the English in parentheses at the FIRST occurrence within this section only, e.g. 억지(deterrence), 안보 딜레마(security dilemma). Do not repeat the parenthetical for the same term later in the section. Do not add English for ordinary words.
 - Person names: transliterate into Korean and add the original in parentheses at first occurrence, e.g. 케네스 월츠(Kenneth Waltz). Institutions, military units, and treaties: standard Korean name + English in parentheses at first occurrence.
@@ -305,7 +335,7 @@ NOTES_PER_REQ_CHARS = 9000
 def build_notes_system_blocks(glossary: str = "", mode: str = None) -> list:
     glossary = merge_glossary(glossary)
     rule = NOTES_RULE_ALL if (mode or FOOTNOTE_MODE) == "all" else NOTES_RULE_COMMENTARY
-    blocks = [{"type": "text", "text": NOTES_SYSTEM.replace("{mode_rule}", rule)}]
+    blocks = [{"type": "text", "text": NOTES_SYSTEM.replace("{mode_rule}", rule)}] + _style_block()
     if glossary and glossary.strip():
         blocks.append({"type": "text",
                        "text": "## Glossary (use these renderings consistently)\n" + glossary.strip()})
@@ -391,7 +421,7 @@ def merge_glossary(auto: str) -> str:
 def build_system_blocks(glossary: str = "") -> list:
     """system 파라미터로 넘길 블록 리스트. 마지막 블록에 cache_control (프롬프트 캐싱)."""
     glossary = merge_glossary(glossary)
-    blocks = [{"type": "text", "text": SYSTEM_PROMPT}]
+    blocks = [{"type": "text", "text": SYSTEM_PROMPT}] + _style_block()
     if glossary and glossary.strip():
         blocks.append({"type": "text",
                        "text": "## Glossary (use these renderings consistently)\n" + glossary.strip()})
@@ -1584,6 +1614,47 @@ def looks_summarized(src: str, tr: str) -> bool:
     return hangul_count(tr) / w < 1.2
 
 
+# 문체 점검용 패턴 (style_ko.txt 2항 기준) — 보고만 하고 경고 수에는 넣지 않는다
+STYLE_PATTERNS = {
+    "은유동사": [("에 기대", r"에 기대"), ("뿌리를 두다", r"뿌리를 두"), ("드러내다", r"드러[내낸났]"),
+              ("조명하다", r"조명[하한했]"), ("추동하다", r"추동"), ("견인하다", r"견인[하한했]"),
+              ("포착하다", r"포착[하한했]"), ("담아내다", r"담아[내낸냈]"), ("작동하다", r"작동[하한했]"),
+              ("맞닿아 있다", r"맞닿아"), ("엮여 있다", r"엮여 있"), ("가로지르다", r"가로지[르른]"),
+              ("위치시키다", r"위치시[키킨켰]"), ("질문을 던지다", r"질문을 던"), ("통찰을 제공하다", r"통찰을 제공"),
+              ("가능하게 한다", r"가능하게 [하한했]")],
+    "추상명사": [("층위", r"층위"), ("렌즈", r"렌즈"), ("역학", r"역학"), ("궤적", r"궤적"),
+              ("간극", r"간극"), ("~라는 맥락에서", r"라는 맥락에서"), ("이 지점에서", r"이 지점에서")],
+    "문법직역": [("~에 있어서", r"에 있어서"), ("~함에 있어", r"함에 있어"), ("~을/를 통해", r"[을를] 통해"),
+              ("~라는 점에서", r"라는 점에서"), ("~을/를 가지다", r"[을를] 가[지진졌]"), ("~할 필요가 있다", r"할 필요가 있"),
+              ("~되어지다", r"되어[지진졌]"), ("~에 의해", r"에 의해"), ("~에 관한 한", r"에 관한 한"),
+              ("가장 ~ 중 하나", r"가장 [^.\n]{1,20} 중 하나")],
+    "상투어": [("결론적으로", r"결론적으로"), ("요컨대", r"요컨대"), ("시사점", r"시사점"), ("귀추가 주목", r"귀추가 주목"),
+            ("단순히 ~이 아니라", r"단순히 [^.\n]{0,30}[이가] 아니라")],
+}
+
+
+def style_report(full: str) -> list:
+    """번역문에 남은 직역투 표현을 유형별로 센다 (style_ko.txt 4-1 의 '유형별 개수·최다 표현' 보고 형식)."""
+    body = PAGE_RE.sub(" ", FNREF_RE.sub("", full or ""))
+    n_chars = max(1, hangul_count(body))
+    by_type, hits = {}, []
+    for typ, pats in STYLE_PATTERNS.items():
+        tot = 0
+        for label, pat in pats:
+            c = len(re.findall(pat, body))
+            if c:
+                tot += c
+                hits.append((c, label))
+        by_type[typ] = tot
+    total = sum(by_type.values())
+    out = [f"[문체] 직역투 표현 {total}건 (한글 1만 자당 {total / n_chars * 10000:.1f}건): "
+           + ", ".join(f"{k} {v}" for k, v in by_type.items())]
+    if hits:
+        hits.sort(reverse=True)
+        out.append("  많이 나온 표현: " + ", ".join(f"'{l}' {c}" for c, l in hits[:6]))
+    return out
+
+
 def run_qa(full: str, notes: dict, stats: dict = None, vision: bool = False) -> list:
     stats = stats or {}
     lines = []
@@ -1666,6 +1737,10 @@ def run_qa(full: str, notes: dict, stats: dict = None, vision: bool = False) -> 
     fails = re.findall(r"\[번역 실패[^\]]*\]", full)
     if fails:
         lines.append(f"  ! 번역 실패 구간 {len(fails)}개: {fails[:10]}"); warn += len(fails)
+    try:
+        lines += style_report(full)
+    except Exception:
+        pass
     head = f"QA 점검: {'이상 없음' if warn == 0 else f'확인 필요 {warn}건'}"
     report = [head] + lines
     try:
@@ -1780,7 +1855,7 @@ def build_vision_system_blocks(glossary: str = "") -> list:
     glossary = merge_glossary(glossary)
     prompt = SYSTEM_PROMPT + VISION_PROMPT_EXTRA.format(footnote_rule=fn_rule, endnote_rule=en_rule,
                                                         page_rule=page_rule)
-    blocks = [{"type": "text", "text": prompt}]
+    blocks = [{"type": "text", "text": prompt}] + _style_block()
     if glossary and glossary.strip():
         blocks.append({"type": "text",
                        "text": "## Glossary (use these renderings consistently)\n" + glossary.strip()})

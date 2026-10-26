@@ -56,7 +56,7 @@ except Exception:
     HAS_DND = False
 
 
-APP_VERSION = "v4 GUI 1.2"
+APP_VERSION = "v4 GUI 1.3"
 FROZEN = bool(getattr(sys, "frozen", False))      # PyInstaller exe 로 실행 중인가
 # APP_DIR : GUI 자신이 있는 폴더 (gui\ — exe·ptworker·아이콘·gui.cfg)
 # BASE_DIR: 번역 스크립트(paper_utils.py)와 공통 설정이 있는 루트. 자기 폴더 -> 한 단계 위 순으로 찾는다.
@@ -81,6 +81,7 @@ GUI_CFG = APP_DIR / "gui.cfg"
 BATCH_INFO = BASE_DIR / "batch_info.json"
 GLOSS_DIR = BASE_DIR / "glossaries"
 GLOSS_EXAMPLE = BASE_DIR / "glossary_example.txt"
+STYLE_DEFAULT = "style_ko.txt"          # 한국어 문체 지침 (paper_utils 가 번역 프롬프트에 넣음)
 QA_FILE = BASE_DIR / "last_qa.txt"
 
 IS_WIN = os.name == "nt"
@@ -111,10 +112,10 @@ OUTPUT_OPTS = [("docx", "DOCX"), ("pdf", "PDF"), ("docx+pdf", "DOCX+PDF"), ("md"
 
 # extract.cfg — Translator.bat 의 :savecfg 와 같은 키·순서
 CFG_ORDER = ["footnotes", "strip_references", "output_format", "effort", "figures",
-             "glossary", "page_markers", "first_page", "glossary_file"]
+             "glossary", "page_markers", "first_page", "glossary_file", "style_file"]
 CFG_DEFAULTS = {"footnotes": "commentary", "strip_references": "true", "output_format": "docx",
                 "effort": "low", "figures": "true", "glossary": "true", "page_markers": "true",
-                "first_page": "auto", "glossary_file": "none"}
+                "first_page": "auto", "glossary_file": "none", "style_file": STYLE_DEFAULT}
 CFG_VALID = {"footnotes": ("strip", "commentary", "all"),
              "output_format": ("docx", "pdf", "docx+pdf", "md"),
              "effort": tuple(EFFORTS)}
@@ -170,6 +171,8 @@ def load_extract_cfg():
             seen.add(k)
             if k == "glossary_file":
                 vals[k] = v or "none"                 # 대소문자 보존
+            elif k == "style_file":
+                vals[k] = v or STYLE_DEFAULT          # 빈 값 = 기본 파일 (paper_utils 와 같은 규칙)
             elif k == "first_page":
                 vals[k] = v if v.isdigit() else "auto"
             elif k in CFG_VALID:
@@ -458,6 +461,18 @@ class App(_Base):
                           border_width=1, text_color=("gray10", "gray90"),
                           command=cmd).pack(side="left", padx=(0, 6))
 
+        # 문체
+        self._section(sb, "한국어 문체")
+        self.style_var = tk.BooleanVar(value=True)
+        ctk.CTkSwitch(sb, text="문체 지침 적용 (직역투·AI 문체 제거)", variable=self.style_var,
+                      font=self.f_body, command=self._on_style).pack(fill="x", padx=16, pady=3)
+        srow = ctk.CTkFrame(sb, fg_color="transparent")
+        srow.pack(fill="x", padx=16, pady=3)
+        ctk.CTkButton(srow, text="지침 편집", width=86, font=self.f_small, fg_color="transparent",
+                      border_width=1, text_color=("gray10", "gray90"),
+                      command=self._style_edit).pack(side="left", padx=(0, 6))
+        self.style_hint = self._hint(sb)
+
         # 출력
         self._section(sb, "출력 형식")
         self.out_seg = ctk.CTkSegmentedButton(sb, values=[l for _, l in OUTPUT_OPTS], font=self.f_body,
@@ -624,6 +639,7 @@ class App(_Base):
         self.fig_var.set(c["figures"] == "true")
         self.gl_var.set(c["glossary"] == "true")
         self._refresh_glossaries()
+        self._refresh_style()
         self.out_seg.set(dict(OUTPUT_OPTS)[c["output_format"]])
         self.appearance.set({"system": "시스템", "light": "라이트", "dark": "다크"}.get(
             self.gui_cfg.get("appearance", "system"), "시스템"))
@@ -644,11 +660,12 @@ class App(_Base):
         c = self.cfg
         fn = dict(FOOTNOTE_OPTS)[c["footnotes"]]
         gl = c["glossary_file"] if c["glossary_file"].lower() != "none" else "없음"
+        st = "문체 지침 " + ("켬" if self._style_on() else "끔")
         pm = ("쪽 마커 " + ("자동" if c["first_page"] == "auto" else f"p.{c['first_page']}~")) \
             if c["page_markers"] == "true" else "쪽 마커 끔"
         self.summary_label.configure(
             text=f"{self.model}  ·  effort {c['effort']}  ·  각주 {fn}  ·  {pm}  ·  "
-                 f"출력 {dict(OUTPUT_OPTS)[c['output_format']]}  ·  사용자 용어집 {gl}")
+                 f"출력 {dict(OUTPUT_OPTS)[c['output_format']]}  ·  사용자 용어집 {gl}  ·  {st}")
 
     def _update_model_hint(self):
         m = next((x for x in MODELS if x[0] == self.model), None)
@@ -769,6 +786,47 @@ class App(_Base):
         GLOSS_DIR.mkdir(exist_ok=True)
         open_path(GLOSS_DIR)
         self.after(1500, self._refresh_glossaries)
+
+    # ──────────────── 한국어 문체 지침 ────────────────
+    def _style_path(self):
+        name = self.cfg.get("style_file", STYLE_DEFAULT)
+        if name.lower() == "none":
+            name = STYLE_DEFAULT
+        p = Path(name)
+        return p if p.is_absolute() else BASE_DIR / name
+
+    def _style_on(self):
+        return self.cfg.get("style_file", STYLE_DEFAULT).lower() != "none" and self._style_path().exists()
+
+    def _refresh_style(self):
+        p = self._style_path()
+        on = self.cfg.get("style_file", STYLE_DEFAULT).lower() != "none"
+        self.style_var.set(on and p.exists())
+        if not p.exists():
+            txt = f"{p.name} 파일이 없어 적용되지 않습니다 (저장소에서 다시 받으세요)."
+        elif on:
+            txt = (f"{p.name} 을(를) 본문·각주 번역 프롬프트에 넣습니다.\n"
+                   "원문 충실성이 우선이며, 결과의 남은 직역투는 QA 보고서에 집계됩니다.")
+        else:
+            txt = "끔 — 기본 번역 지시만 사용합니다."
+        self.style_hint.configure(text=txt)
+
+    def _on_style(self):
+        if self.style_var.get() and not self._style_path().exists():
+            messagebox.showwarning("문체 지침", f"{self._style_path().name} 파일이 없습니다.")
+            self.style_var.set(False)
+            return
+        cur = self.cfg.get("style_file", STYLE_DEFAULT)
+        self._set_cfg("style_file", (STYLE_DEFAULT if cur.lower() == "none" else cur)
+                      if self.style_var.get() else "none")
+        self._refresh_style()
+
+    def _style_edit(self):
+        p = self._style_path()
+        if not p.exists():
+            messagebox.showinfo("문체 지침", f"{p.name} 파일이 없습니다.")
+            return
+        self._edit_file(p)
 
     # ──────────────── API 키 ────────────────
     def _refresh_key(self):

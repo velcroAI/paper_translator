@@ -56,6 +56,7 @@ set "GLOSS_RAW=true"
 set "PM_RAW=true"
 set "FIRST_PAGE=auto"
 set "GLOSS_FILE="
+set "STYLE_FILE="
 if exist "!EXTRACT_CFG!" (
     for /f "usebackq tokens=1,2 delims==" %%a in ("!EXTRACT_CFG!") do (
         if /i "%%a"=="footnotes"        set "FN_MODE=%%b"
@@ -68,6 +69,7 @@ if exist "!EXTRACT_CFG!" (
         if /i "%%a"=="page_markers"     set "PM_RAW=%%b"
         if /i "%%a"=="first_page"       set "FIRST_PAGE=%%b"
         if /i "%%a"=="glossary_file"    set "GLOSS_FILE=%%b"
+        if /i "%%a"=="style_file"       set "STYLE_FILE=%%b"
     )
 )
 if not defined FN_MODE (
@@ -88,6 +90,10 @@ if not defined GLOSS_FILE (
 )
 set "GLOSS_FILE_DISP=!GLOSS_FILE!"
 if /i "!GLOSS_FILE!"=="none" set "GLOSS_FILE_DISP=OFF"
+if not defined STYLE_FILE set "STYLE_FILE=style_ko.txt"
+set "STYLE_DISP=ON (!STYLE_FILE!)"
+if /i "!STYLE_FILE!"=="none" set "STYLE_DISP=OFF"
+if /i not "!STYLE_FILE!"=="none" if not exist "!SCRIPT_DIR!!STYLE_FILE!" set "STYLE_DISP=OFF (file missing)"
 set "OUT_FMT_DISP=DOCX"
 if /i "!OUT_FMT!"=="pdf"      set "OUT_FMT_DISP=PDF"
 if /i "!OUT_FMT!"=="docx+pdf" set "OUT_FMT_DISP=DOCX + PDF"
@@ -122,6 +128,7 @@ echo    Footnotes : !FN_DISP!    Refs cut: !STRIP_REF!
 echo    Page mark : !PM_DISP!
 echo    Figures   : !FIG_DISP!    Auto glossary: !GLOSS_DISP!
 echo    User gloss: !GLOSS_FILE_DISP!
+echo    KR style  : !STYLE_DISP!
 echo    Output    : !OUT_FMT_DISP!
 echo    API key   : !KEY_DISP!
 echo  ==========================================
@@ -235,6 +242,7 @@ goto menu
     echo page_markers=!PM_RAW!
     echo first_page=!FIRST_PAGE!
     echo glossary_file=!GLOSS_FILE!
+    echo style_file=!STYLE_FILE!
 ) > "!EXTRACT_CFG!"
 goto :eof
 
@@ -254,12 +262,13 @@ echo    6  Auto glossary pass   (current: !GLOSS_DISP!)
 echo    7  Output format        (current: !OUT_FMT_DISP!)
 echo    8  API key              (current: !KEY_DISP!)
 echo    9  User glossary        (current: !GLOSS_FILE_DISP!)
+echo    s  Korean style guide   (current: !STYLE_DISP!)
 echo.
 echo    b  Back
 echo  ==========================================
 echo.
 set "oc="
-set /p "oc=  Select [1-9/b]: "
+set /p "oc=  Select [1-9/s/b]: "
 
 if /i "!oc!"=="1" goto modelselect
 if /i "!oc!"=="2" goto effortselect
@@ -270,6 +279,7 @@ if /i "!oc!"=="6" goto glossarytoggle
 if /i "!oc!"=="7" goto outputformat
 if /i "!oc!"=="8" goto apikey
 if /i "!oc!"=="9" goto glossarymenu
+if /i "!oc!"=="s" goto stylemenu
 if /i "!oc!"=="b" (cls & goto menu)
 
 echo  Invalid choice.
@@ -558,6 +568,45 @@ call :savecfg
 start "" notepad "%SCRIPT_DIR%glossaries\!gname!"
 cls
 goto menu
+
+:stylemenu
+cls
+echo.
+echo  ==========================================
+echo    Korean Style Guide   (style_ko.txt)
+echo  ==========================================
+echo    Rules that remove translationese from the
+echo    Korean wording. Fidelity to the source always
+echo    comes first. Leftover expressions are counted
+echo    in the QA report.
+echo  ==========================================
+echo    Current : !STYLE_DISP!
+echo.
+echo    1  Turn ON
+echo    2  Turn OFF
+echo    3  Edit style_ko.txt in Notepad
+echo    b  Back
+echo  ==========================================
+echo.
+set "sc="
+set /p "sc=  Select [1/2/3/b]: "
+if "!sc!"=="1" (
+    if /i "!STYLE_FILE!"=="none" set "STYLE_FILE=style_ko.txt"
+    call :savecfg
+    cls
+    goto menu
+)
+if "!sc!"=="2" (set "STYLE_FILE=none" & call :savecfg & cls & goto menu)
+if "!sc!"=="3" (
+    set "SPATH=!SCRIPT_DIR!!STYLE_FILE!"
+    if /i "!STYLE_FILE!"=="none" set "SPATH=!SCRIPT_DIR!style_ko.txt"
+    start "" notepad "!SPATH!"
+    goto stylemenu
+)
+if /i "!sc!"=="b" (cls & goto options)
+echo  Invalid choice.
+timeout /t 1 > nul
+goto stylemenu
 
 :glossarytoggle
 if /i "!GLOSS_RAW!"=="true" (set "GLOSS_RAW=false") else (set "GLOSS_RAW=true")
