@@ -561,6 +561,7 @@ def read_document(path: str):
             footnote_mode=FOOTNOTE_MODE,
             page_markers=PAGE_MARKERS,
             first_page=FIRST_PAGE,
+            strip_references=STRIP_REFERENCES,
             extract_figures=EXTRACT_FIGURES,
             extract_tables=EXTRACT_FIGURES,
             extract_equations=EXTRACT_FIGURES,
@@ -588,17 +589,24 @@ def clean_text(text: str) -> str:
 
     stripped_lines = [l.strip() for l in lines if l.strip()]
     counts = Counter(stripped_lines)
-    repeated = {s for s, c in counts.items() if c >= 3 and len(s) <= 120 and not MARKER_RE.match(s)}
+    repeated = {s for s, c in counts.items() if c >= 3 and len(s) <= 120 and not MARKER_RE.match(s)
+                and not s.startswith("|")}            # 표 머리줄·구분선은 여러 번 나와도 정상
 
+    # 같은 장(# 제목 사이) 안에서 두 번 이상 나오는 헤딩 = 머리글 잔재 → 제거.
+    # 여러 장을 합친 PDF 에서는 'Introduction' 같은 절 제목이 장마다 반복되므로 장 단위로만 센다.
     heading_text_counts: Counter = Counter()
+    chap = 0
     for l in stripped_lines:
         hm = re.match(r'^(#{1,4})\s+(.+)$', l)
         if hm:
-            heading_text_counts[hm.group(2).strip()] += 1
-    repeated_heading_texts = {t for t, c in heading_text_counts.items() if c >= 2 and len(t) <= 100}
+            if len(hm.group(1)) == 1:
+                chap += 1
+            heading_text_counts[(chap, hm.group(2).strip())] += 1
+    repeated_heading_keys = {k for k, c in heading_text_counts.items() if c >= 2 and len(k[1]) <= 100}
 
     cleaned = []
     seen_repeated = set()
+    chap = 0
     for line in lines:
         s = line.strip()
         if not s:
@@ -609,7 +617,9 @@ def clean_text(text: str) -> str:
             continue
 
         hm = re.match(r'^(#{1,4})\s+(.+)$', s)
-        if hm and hm.group(2).strip() in repeated_heading_texts:
+        if hm and len(hm.group(1)) == 1:
+            chap += 1
+        if hm and (chap, hm.group(2).strip()) in repeated_heading_keys:
             continue
 
         if s in repeated:
@@ -1118,13 +1128,14 @@ def assemble_full(translated_chunks: list) -> tuple:
     full = strip_header_leakage(full)
     # 정의 없는 각주 참조 제거
     full = FNREF_RE.sub(lambda m: m.group(0) if m.group(1) in notes else "", full)
-    # 중복 쪽 마커(같은 번호 연속) 정리: 첫 번째만 남김
-    seen = set()
+    # 중복 쪽 마커 정리: 바로 앞 마커와 같은 번호일 때만 지운다
+    # (여러 책을 합친 PDF 는 장마다 같은 쪽번호가 다시 나올 수 있으므로 전체 중복 제거는 하지 않는다)
+    last = [None]
     def _dedup(m):
         n = m.group(1)
-        if n in seen:
+        if n == last[0]:
             return ""
-        seen.add(n)
+        last[0] = n
         return m.group(0)
     full = PAGE_RE.sub(_dedup, full)
     # 빈 헤딩 줄('##' 만 남은 것) 제거
@@ -1271,7 +1282,9 @@ def _block_kinds(block, state):
     if (not state["after_title"] and state["seen_title"] and len(lines) == 1 and 2 <= len(plain) <= 45
             and not re.search(r"[.,;:!?。…다요\]\"”’]$", plain) and not FNREF_RE.search(plain)
             and not re.match(r"^[\(\[\d①-⑳•\-–—'\"‘“]", plain) and not _CAPTION_KO_RE.match(plain)
-            and "," not in plain and len(plain.split()) <= 6):
+            and "," not in plain and len(plain.split()) <= 6
+            # 문장 중간에서 끊긴 조각('…강조했다고 해서', '…극복하기 위해')은 제목이 아니다
+            and not re.search(r"(서|고|며|면|지만|는데|니까|위해|위하여|하여|으로|로|에서|에게|의|을|를|과|와|및|도|은|는|이|가|한|된|인|할|하는|되는|있는|없는|같은)$", plain)):
         yield ("heading", (2, merged))
         return
     if state["after_title"] and len(merged) <= 120 and not FNREF_RE.search(merged) \
@@ -1508,8 +1521,11 @@ def output_paths(input_file: str, fmt: str, page_range: tuple = None) -> dict:
     p = Path(input_file)
     stem = p.stem
     rng = ""
-    if page_range and all(page_range) and not re.search(r"pp?\.?\s*\d", stem):
-        rng = f"_pp{page_range[0]}-{page_range[1]}"
+    if page_range and not re.search(r"pp?\.?\s*\d", stem):
+        if isinstance(page_range, str):
+            rng = f"_pp{page_range}"
+        elif all(page_range):
+            rng = f"_pp{page_range[0]}-{page_range[1]}"
     base = p.parent / f"{stem}{rng}_한국어번역"
     fmts = {"docx+pdf": ["docx", "pdf"]}.get(fmt, [fmt])
     return {f: str(base) + "." + f for f in fmts}
@@ -1531,12 +1547,27 @@ def _writable_path(path: str) -> str:
         return str(alt)
 
 
+def page_segments_of(full: str) -> list:
+    """쪽 마커를 연속 구간으로 묶는다. 여러 책·장을 이어 붙인 PDF 는 구간이 여럿이다.
+    [(시작, 끝), ...]  — 1~5쪽 건너뜀은 같은 구간(누락)으로, 그 이상·역행은 새 구간으로 본다."""
+    nums = [int(n) for n in (m.group(1) for m in PAGE_RE.finditer(full or "")) if n.isdigit()]
+    segs = []
+    for n in nums:
+        if segs and 0 < n - segs[-1][1] <= 6:
+            segs[-1][1] = n
+        elif not segs or n != segs[-1][1]:
+            segs.append([n, n])
+    return [tuple(x) for x in segs]
+
+
 def page_range_of(full: str):
-    nums = [m.group(1) for m in PAGE_RE.finditer(full or "")]
-    nums = [int(n) for n in nums if n.isdigit()]
-    if len(nums) >= 1:
-        return (nums[0], max(nums))
-    return None
+    """파일명용 쪽 범위: 구간 하나면 (a, b), 여럿이면 'a-b_c-d' 문자열."""
+    segs = page_segments_of(full)
+    if not segs:
+        return None
+    if len(segs) == 1:
+        return segs[0]
+    return "_".join(f"{a}-{b}" for a, b in segs[:4])
 
 
 def save_output(translated_chunks: list, out_path, fmt: str, assets: dict = None, citation: str = "") -> list:
@@ -1667,11 +1698,13 @@ def run_qa(full: str, notes: dict, stats: dict = None, vision: bool = False) -> 
             lines.append("[쪽 마커] 없음 — 원서 쪽번호를 찾지 못함 (bat: Options > 4 Page markers / GUI: [첫 쪽 번호] 에서 지정 가능)")
             warn += 1
         else:
-            exp = set(range(nums[0], max(nums) + 1))
-            missing = sorted(exp - set(nums))
-            backs = [(a, b) for a, b in zip(nums, nums[1:]) if b <= a]
+            segs = page_segments_of(full)
+            missing = sorted({x for a, b in zip(nums, nums[1:]) if 1 < b - a <= 6 for x in range(a + 1, b)})
+            backs = [(a, b) for a, b in zip(nums, nums[1:]) if b == a]
             src = stats.get("page_source") or ("vision" if vision else "")
-            lines.append(f"[쪽 마커] p.{nums[0]}–{max(nums)} ({len(nums)}개, 출처: {src or '-'})")
+            rng = ", ".join(f"p.{a}–{b}" for a, b in segs)
+            lines.append(f"[쪽 마커] {rng} ({len(nums)}개, 출처: {src or '-'})"
+                         + (f" — 쪽번호 구간 {len(segs)}개(여러 책·장을 합친 PDF)" if len(segs) > 1 else ""))
             if missing:
                 lines.append(f"  ! 빠진 쪽: {missing[:30]}{' ...' if len(missing) > 30 else ''}"); warn += 1
             if backs:
@@ -1706,7 +1739,14 @@ def run_qa(full: str, notes: dict, stats: dict = None, vision: bool = False) -> 
     if stats.get("endnote_pages"):
         ep = stats["endnote_pages"]
         how = {"strip": "생략", "commentary": "논평성만 각주로", "all": "전체 각주로"}.get(FOOTNOTE_MODE, "")
-        lines.append(f"[미주] 장 끝 Notes 절 p.{ep[0]}–{ep[-1]} → {how}"
+        grp = []
+        for x in ep:
+            if grp and 0 <= x - grp[-1][1] <= 1:
+                grp[-1][1] = x
+            else:
+                grp.append([x, x])
+        lines.append(f"[미주] 장 끝 Notes 절 " + ", ".join(f"p.{a}–{b}" if a != b else f"p.{a}" for a, b in grp)
+                     + f" → {how}"
                      + (f" (본문과 연결 {stats.get('endnotes_linked')}개)" if stats.get("endnotes_linked") else ""))
     if pw and segs:
         ratios = {}

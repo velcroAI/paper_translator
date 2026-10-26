@@ -52,6 +52,9 @@ NOTE_LEAD_RE = re.compile(r"^\s*(?:\x01(\d{1,3})\x02|(\d{1,3})[\.\)]?(?=\s+\S))\
 SUP_RE = re.compile(r"\x01(\d{1,3})\x02")
 NOTES_HEAD_RE = re.compile(r"^\s*(notes|endnotes|notes and references|references and notes|notes to chapter.*)\s*$",
                            re.IGNORECASE)
+BIBLIO_HEAD_RE = re.compile(r"^\s*(discussion of (the )?sources|bibliograph\w*( essay| note)?|a note on (the )?sources|"
+                            r"note on sources|further reading|suggestions for further reading|select(ed)? bibliography|"
+                            r"references|works cited)\s*$", re.IGNORECASE)
 CHAPTER_LABEL_RE = re.compile(r"^\s*[\[\(]?\s*(\d{1,2}|[IVXL]{1,6})\s*[\]\)]?\.?\s*$|^\s*(chapter|part)\s+[\w\-]+\s*$",
                               re.IGNORECASE)
 PAGE_TOKEN = "[[PAGE:{}]]"
@@ -134,6 +137,35 @@ def _block_is_bold(block):
     return n > 0 and b / n > 0.7
 
 
+_MONTHS = r"(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\.?"
+
+
+def _looks_person_name(t: str) -> bool:
+    """'Robert A. Doughty', 'Ronald Chalmers Hood III' 같은 저자 표시줄."""
+    toks = (t or "").replace(",", " ").split()
+    if not 2 <= len(toks) <= 5:
+        return False
+    for x in toks:
+        if not (re.fullmatch(r"[A-Z][a-z'\-]+", x) or re.fullmatch(r"[A-Z]\.", x)
+                or re.fullmatch(r"(I{1,3}|IV|Jr\.?|Sr\.?)", x)):
+            return False
+    return True
+
+
+def _looks_date_or_number(t: str) -> bool:
+    """'1944', '221', 'June 18 June 22 July 3', 'August-September' 같은 줄 (연표·쪽번호)."""
+    s = (t or "").strip().lower()
+    if not s:
+        return False
+    if re.fullmatch(r"[\d\s\-–—,./]+", s):
+        return True
+    toks = re.findall(r"[a-z]+|\d+", s)
+    if not toks:
+        return False
+    datey = sum(1 for x in toks if x.isdigit() or re.fullmatch(_MONTHS, x))
+    return datey / len(toks) >= 0.8
+
+
 def _block_is_italic(block):
     n = 0; k = 0
     for l in block.get("lines", []):
@@ -165,6 +197,19 @@ def _dehyphenate_join(lines):
         else:
             out = out + " " + nxt
     return re.sub(r"[ \t]{2,}", " ", out).strip()
+
+
+def _letters(s: str) -> str:
+    return re.sub(r"[^a-z]", "", (s or "").lower())
+
+
+def _similar(a: str, b: str) -> bool:
+    import difflib
+    if not a or not b:
+        return False
+    if abs(len(a) - len(b)) > max(4, 0.25 * max(len(a), len(b))):
+        return False
+    return difflib.SequenceMatcher(None, a, b).ratio() >= 0.8
 
 
 def _norm_header(s: str) -> str:
@@ -350,7 +395,7 @@ class PdfExtractor:
     def __init__(self, path, assets_dir, strip_footnotes=True,
                  extract_figures=True, extract_tables=True, extract_equations=True,
                  fig_dpi=200, eq_dpi=300, footnote_mode=None, page_markers=True,
-                 first_page=None):
+                 first_page=None, strip_references=True):
         self.path = Path(path)
         self.assets_dir = Path(assets_dir)
         # footnote_mode: strip(제거) | commentary(논평성만) | all(전체) — 하단 각주 영역은 항상 본문에서 분리
@@ -361,6 +406,7 @@ class PdfExtractor:
         self.strip_footnotes = True
         self.page_markers = page_markers
         self.first_page = first_page
+        self.strip_references = strip_references
         self.extract_figures = extract_figures
         self.extract_tables = extract_tables
         self.extract_equations = extract_equations
@@ -488,7 +534,9 @@ class PdfExtractor:
 
     # ── 러닝 헤더/푸터: 상/하단 영역에서 반복되는 정규화 텍스트 ──
     def _collect_running_headers(self, pages, dicts):
-        c = Counter()
+        """상/하단에서 반복되는 머리글. OCR 오탈자('Military E_ffective11ess')를 견디도록
+        글자만 남긴 문자열을 유사도(≥0.8)로 묶어 센다."""
+        clusters = []          # [rep_letters, count, sample_norm]
         for page, d in zip(pages, dicts):
             h = page.rect.height
             seen = set()
@@ -501,12 +549,20 @@ class PdfExtractor:
                 t = _dehyphenate_join(_block_lines_text(b))
                 if not t or len(t) > 120:
                     continue
-                n = _norm_header(t)
-                if n and n not in seen:
-                    seen.add(n)
-                    c[n] += 1
+                L = _letters(t)
+                if len(L) < 4:
+                    continue
+                for ci, c in enumerate(clusters):
+                    if ci not in seen and _similar(L, c[0]):
+                        c[1] += 1
+                        seen.add(ci)
+                        break
+                else:
+                    clusters.append([L, 1, _norm_header(t)])
+                    seen.add(len(clusters) - 1)
         thresh = 2 if len(pages) <= 3 else 3
-        return {k for k, v in c.items() if v >= thresh}
+        self.header_letters = [c[0] for c in clusters if c[1] >= thresh]
+        return {c[2] for c in clusters if c[1] >= thresh}
 
     def _is_running_header(self, block, page, text):
         h = page.rect.height
@@ -516,6 +572,8 @@ class PdfExtractor:
         if not text or PAGENUM_RE.match(text):
             return True
         if len(text) <= 120 and _norm_header(text) in self.header_norms:
+            return True
+        if len(text) <= 120 and any(_similar(_letters(text), h) for h in getattr(self, "header_letters", [])):
             return True
         if len(text) <= 100 and not re.search(r"[.!?;]", text) \
                 and re.search(r"(^\d{1,4}\s|\s\d{1,4}$)", text):
@@ -682,12 +740,26 @@ class PdfExtractor:
         eqnum_blocks = [i for i, b in enumerate(text_blocks)
                         if EQNUM_RE.match(_block_text(b).strip())]
 
+        # 연표처럼 '날짜 | 사건' 두 단 배치인 쪽 → 표 하나로
+        chrono = self._chronology_table(page, text_blocks, pw, ph)
+        chrono_done = False
+
         i = 0
         while i < len(text_blocks):
             b = text_blocks[i]
             br = _rect(b["bbox"])
             eff, first_x0, last_w, n_lines = metrics[i]
             text = _dehyphenate_join(_block_lines_text(b))
+
+            if chrono and i in chrono[1]:
+                if not chrono_done:
+                    chrono_done = True
+                    it = _Item("text", chrono[0], chrono[2], page=pno)
+                    it.para_end = True
+                    it.para_start = True
+                    items.append(it)
+                i += 1
+                continue
 
             reg = in_region(b)
             if reg is not None:
@@ -747,8 +819,11 @@ class PdfExtractor:
             nwords = len(text.split())
             is_short = len(text) <= 160 and nwords <= 20 and not SENT_END_RE.search(text)
             not_full = col_width > 0 and (br.width < 0.80 * col_width)
+            plain_t = re.sub(r"(?<=[A-Za-z\.\)])\d{1,3}$", "", text).strip()     # 끝의 각주 번호 제거
             if _is_caption_text(text, n_lines):
                 pass                                   # 'Table 2.1 ...' 캡션은 헤딩이 아니다
+            elif not CHAPTER_LABEL_RE.match(text) and (_looks_date_or_number(plain_t) or re.search(r"[.!?]$", plain_t)):
+                pass                                   # 연표의 날짜·연도, 쪽번호, 문장으로 끝나는 캡션
             elif ((not self.title_done and pno == 0) or (eff >= self.body_size * 1.8 and br.y0 < ph * 0.45)) \
                     and eff >= self.body_size * 1.3 and len(text) <= 250 and n_lines <= 4:
                 item.heading = 1
@@ -784,6 +859,60 @@ class PdfExtractor:
         if self.page_markers:
             items.insert(0, _Item("page", PAGE_TOKEN.format(self.page_nums[pno]), None, page=pno))
         return items
+
+    # ── 연표(날짜 | 사건) 두 단 배치 → GFM 표 ──
+    def _chronology_table(self, page, text_blocks, pw, ph):
+        """왼쪽 좁은 단에 날짜, 오른쪽 넓은 단에 사건 설명이 있는 연표를 표로 묶는다.
+        반환: (markdown 표 텍스트, 소비한 블록 인덱스 set, rect) 또는 None"""
+        def is_hdr(b):
+            return b["bbox"][3] < ph * 0.10 or b["bbox"][1] > ph * 0.92
+        left, years, right = [], [], []
+        for idx, b in enumerate(text_blocks):
+            if is_hdr(b):
+                continue
+            x0, y0, x1, y1 = b["bbox"]
+            lines = [(l["bbox"][1], _span_text(l).strip()) for l in b.get("lines", []) if _span_text(l).strip()]
+            if not lines:
+                continue
+            if x1 < pw * 0.40 and all(len(t) <= 30 and _looks_date_or_number(t) for _, t in lines):
+                left.append((idx, lines, x1))
+            elif len(lines) == 1 and re.fullmatch(r"\d{4}", lines[0][1]) and abs((x0 + x1) / 2 - pw / 2) < pw * 0.12:
+                years.append((idx, lines[0]))
+            else:
+                right.append((idx, b, lines))
+        n_dates = sum(len(l[1]) for l in left)
+        if n_dates < 4:
+            return None
+        lmax = max(l[2] for l in left)
+        right = [r for r in right if r[1]["bbox"][0] > lmax + 6]
+        if not right:
+            return None
+        anchors = sorted([(y, t, "date") for _, ls, _ in left for y, t in ls] +
+                         [(y[1][0], y[1][1], "year") for y in years])
+        rlines = sorted((y, t) for _, _, ls in right for y, t in ls)
+        rows, filled = [], 0
+        pre = [t for y, t in rlines if y < anchors[0][0] - 3]
+        if pre:
+            rows.append(("", _dehyphenate_join(pre)))
+        for k, (y, t, kind) in enumerate(anchors):
+            y_next = anchors[k + 1][0] if k + 1 < len(anchors) else 1e9
+            ev = [tt for yy, tt in rlines if y - 3 <= yy < y_next - 3]
+            if kind == "year":
+                rows.append((f"**{t}**", _dehyphenate_join(ev)))
+            else:
+                rows.append((t, _dehyphenate_join(ev)))
+                filled += bool(ev)
+        if filled < 0.6 * n_dates:
+            return None
+        def cell(x):
+            return (x or "").replace("|", "/").strip()
+        md = ["| Date | Event |", "|---|---|"] + [f"| {cell(a)} | {cell(b)} |" for a, b in rows]
+        used = {l[0] for l in left} | {y[0] for y in years} | {r[0] for r in right}
+        rect = None
+        for idx in used:
+            r = _rect(text_blocks[idx]["bbox"])
+            rect = r if rect is None else rect | r
+        return "\n".join(md), used, rect
 
     # ── 캡션 기준 영역 (스캔 도식 / 괘선 없는 표) ──
     def _caption_anchored_regions(self, page, text_blocks, metrics, regions, ocr, col_x0, col_width):
@@ -1128,6 +1257,8 @@ class PdfExtractor:
         if isinstance(self.first_page, int) and self.first_page > 0:
             self.stats["page_source"] = "manual"
             return [self.first_page + k for k in range(n)]
+        # 쪽마다 '인쇄번호 - 쪽순번' 오프셋 후보를 모은다
+        per_page = []
         votes = Counter()
         for k, (page, d) in enumerate(zip(pages, dicts)):
             h = page.rect.height
@@ -1153,14 +1284,67 @@ class PdfExtractor:
                         off = c - k
                         if c > 0 and off not in seen and not (1900 <= c <= 2100):
                             seen.add(off)
-                            votes[off] += 1
-        if votes:
-            off, cnt = votes.most_common(1)[0]
-            if cnt >= max(2, int(n * 0.3 + 0.5)) and off + 0 >= 1:
+            per_page.append(seen)
+            for off in seen:
+                votes[off] += 1
+        if votes and votes.most_common(1)[0][1] >= max(2, int(n * 0.3 + 0.5)):
+            offs = self._piecewise_offsets(per_page, pages, dicts, votes)
+            if offs:
                 self.stats["page_source"] = "printed"
-                return [off + k for k in range(n)]
+                segs = []
+                for k, o in enumerate(offs):
+                    if not segs or segs[-1][2] != o:
+                        segs.append([k, k, o])
+                    else:
+                        segs[-1][1] = k
+                self.stats["page_segments"] = [(o + a_, o + b_) for a_, b_, o in segs]
+                return [o + k for k, o in enumerate(offs)]
         self.stats["page_source"] = "pdf"
         return [p.number + 1 for p in pages]
+
+    def _piecewise_offsets(self, per_page, pages, dicts, votes):
+        """여러 책·장을 이어 붙인 PDF 대응: 쪽번호 오프셋이 구간마다 다를 수 있다.
+        현재 오프셋을 유지하다가, 새 오프셋이 이 쪽과 다음 두 쪽 중 한 쪽 이상에서 확인되면 바꾼다.
+        번호가 없는 장 첫 쪽(큰 제목이 있는 쪽)은 다음 구간에 붙인다."""
+        n = len(per_page)
+        cur = None
+        for k in range(min(n, 6)):                       # 시작 오프셋: 앞쪽에서 두 번 이상 나온 값
+            for o in per_page[k]:
+                if sum(1 for j in range(min(n, 6)) if o in per_page[j]) >= 2:
+                    cur = o; break
+            if cur is not None:
+                break
+        if cur is None:
+            cur = votes.most_common(1)[0][0]
+        offs = []
+        for k in range(n):
+            ev = per_page[k]
+            if ev and cur not in ev:
+                nxt = [o for o in ev if any(o in per_page[j] for j in range(k + 1, min(n, k + 3)))]
+                if nxt:
+                    new = nxt[0]
+                    # 바로 앞의 '번호 없는' 쪽이 장 첫 쪽이면 새 구간의 첫 쪽으로 옮긴다
+                    j = k - 1
+                    while j >= 0 and not per_page[j] and self._looks_chapter_open(pages[j], dicts[j]):
+                        offs[j] = new
+                        j -= 1
+                        break
+                    cur = new
+            offs.append(cur)
+        if any(o + k < 1 for k, o in enumerate(offs)):
+            return None
+        return offs
+
+    def _looks_chapter_open(self, page, d):
+        h = page.rect.height
+        for b in d.get("blocks", []):
+            if b.get("type") != 0 or b["bbox"][1] > h * 0.5:
+                continue
+            for l in b.get("lines", []):
+                for sp in l.get("spans", []):
+                    if sp.get("text", "").strip() and sp.get("size", 0) >= self.body_size * 1.6:
+                        return True
+        return False
 
     # ── 각주 수집 + 콜아웃 연결 ──
     def _resolve_notes(self, page_items, ocr_flags):
@@ -1282,6 +1466,12 @@ class PdfExtractor:
                             self.title_done = True
                         pi.pop(k)
                         continue
+                    # 제목(#)이 두 줄 이상으로 쪼개진 경우 → 하나로
+                    if a.heading == 1 and b.heading == 1 and not SENT_END_RE.search(a.text):
+                        a.text = a.text.rstrip() + " " + b.text.lstrip()
+                        a.rect = a.rect | b.rect if (a.rect is not None and b.rect is not None) else a.rect
+                        pi.pop(k + 1)
+                        continue
                     # 여러 줄로 쪼개진 제목/헤딩 → 하나로
                     big = a.size >= body * 1.25 and b.size >= body * 1.25
                     similar = a.size > 0 and abs(a.size - b.size) / a.size < 0.15
@@ -1297,8 +1487,9 @@ class PdfExtractor:
                 if it.kind == "text" and it.heading == 1 and k + 1 < len(pi):
                     nx = pi[k + 1]
                     if nx.kind == "text" and nx.heading and len(nx.text) <= 80 and len(nx.text.split()) <= 8 \
-                            and not re.search(r"[\d\.!?:;]", nx.text) and not NOTES_HEAD_RE.match(nx.text) \
-                            and (nx.text.isupper() or nx.size < it.size * 0.7):
+                            and (not re.search(r"[\d\.!?:;]", nx.text) or _looks_person_name(nx.text)) \
+                            and not NOTES_HEAD_RE.match(nx.text) \
+                            and (nx.text.isupper() or nx.size < it.size * 0.7 or _looks_person_name(nx.text)):
                         nx.heading = 0
                         nx.para_end = True
                         nx.para_start = True
@@ -1318,19 +1509,34 @@ class PdfExtractor:
         """'Notes' 헤딩 이후 다음 장 제목 전까지를 본문에서 떼어 미주로 보관(strip 모드면 버림)."""
         self.endnote_sections = []          # [(chapter_seq, [line_sup...])]
         in_notes = False
+        in_biblio = False
         chapter = 0
         cur = None
         removed_pages = set()
+        biblio_pages = set()
         for pno, pi in enumerate(page_items):
             keep = []
             for it in pi:
                 if it.kind == "vision":
-                    in_notes = False
+                    in_notes = in_biblio = False
                     chapter += 1
                     keep.append(it); continue
                 if it.kind == "text" and it.heading == 1:
-                    in_notes = False
+                    in_notes = in_biblio = False
                     chapter += 1
+                # 장 끝 '문헌 해제'(Discussion of Sources 등) — 미주에 붙지 않도록 끊고, 참고문헌으로 취급
+                if it.kind == "text" and len(it.text) <= 60 and BIBLIO_HEAD_RE.match(it.text) \
+                        and (in_notes or it.heading):
+                    in_notes = False
+                    in_biblio = True
+                    if self.strip_references:
+                        biblio_pages.add(pno)
+                        continue
+                    it.heading = it.heading or 2
+                    keep.append(it); continue
+                if in_biblio and self.strip_references and it.kind in ("text", "marker"):
+                    biblio_pages.add(pno)
+                    continue
                 if it.kind == "text" and it.heading and NOTES_HEAD_RE.match(it.text):
                     in_notes = True
                     cur = (chapter, [])
@@ -1345,7 +1551,8 @@ class PdfExtractor:
                     continue
                 keep.append(it)
             pi[:] = keep
-        self.stats["endnote_pages"] = sorted(self.page_nums[p] for p in removed_pages)
+        self.stats["endnote_pages"] = sorted(self.page_nums[p] for p in removed_pages | biblio_pages)
+        self.stats["biblio_pages"] = sorted(self.page_nums[p] for p in biblio_pages)
         n = sum(len(sec[1]) for sec in self.endnote_sections)
         self.stats["endnote_blocks"] = n
 
